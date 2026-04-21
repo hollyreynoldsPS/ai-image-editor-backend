@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import dotenv from "dotenv";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 dotenv.config();
 
@@ -22,54 +22,85 @@ const client = new OpenAI({
 });
 
 app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Image edit server is running."
-  });
+  res.status(200).send("AI Image Editor Backend is running");
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({ ok: true });
 });
 
 app.post("/edit-image", upload.single("image"), async (req, res) => {
   try {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        error: "OPENAI_API_KEY is missing on the server."
+      });
+    }
+
     if (!req.file) {
-      return res.status(400).json({ error: "No image uploaded." });
+      return res.status(400).json({
+        error: "No image file was uploaded."
+      });
     }
 
     const prompt = req.body.prompt?.trim();
+
     if (!prompt) {
-      return res.status(400).json({ error: "Prompt is required." });
+      return res.status(400).json({
+        error: "Prompt is required."
+      });
     }
 
-    const mimeType = req.file.mimetype || "image/png";
-    const imageBase64 = req.file.buffer.toString("base64");
-    const dataUrl = `data:${mimeType};base64,${imageBase64}`;
+    const allowedMimeTypes = ["image/png", "image/jpeg", "image/webp"];
 
-    const imageResponse = await fetch(dataUrl);
-    const imageBlob = await imageResponse.blob();
+    if (!allowedMimeTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({
+        error: `Unsupported image type: ${req.file.mimetype}. Use PNG, JPG, or WEBP.`
+      });
+    }
+
+    const imageFile = await toFile(
+      req.file.buffer,
+      req.file.originalname || "upload.png",
+      { type: req.file.mimetype }
+    );
 
     const strongPrompt = [
       prompt,
-      "Preserve the original composition, people, dog, pose, background, lighting, and clothing unless explicitly changed.",
-      "Make only the requested edit."
+      "Preserve the original composition, pose, people, dog, background, lighting, and all clothing unless explicitly changed.",
+      "Make only the requested edit.",
+      "Do not redesign the scene."
     ].join(" ");
 
     const result = await client.images.edit({
       model: "gpt-image-1",
-      image: imageBlob,
+      image: imageFile,
       prompt: strongPrompt,
       size: "1024x1536"
     });
 
-    const editedBase64 = result?.data?.[0]?.b64_json;
+    const imageBase64 = result?.data?.[0]?.b64_json;
 
-    if (!editedBase64) {
-      return res.status(500).json({ error: "No image returned from OpenAI." });
+    if (!imageBase64) {
+      return res.status(500).json({
+        error: "OpenAI returned no edited image."
+      });
     }
 
-    return res.json({ imageBase64: editedBase64 });
+    return res.status(200).json({
+      imageBase64
+    });
   } catch (error) {
-    console.error("Image edit error:", error);
+    console.error("EDIT IMAGE ERROR:");
+    console.error(error);
+
+    const message =
+      error?.error?.message ||
+      error?.message ||
+      "Unknown server error.";
+
     return res.status(500).json({
-      error: error?.error?.message || error?.message || "Unknown server error."
+      error: message
     });
   }
 });
